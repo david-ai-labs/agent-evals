@@ -1,0 +1,90 @@
+name: customer-support
+description: Order-status and refund handling for the in-memory example support agent.
+
+defaults:
+  timeout_seconds: 2
+
+# Illustrative placeholder rates so the cost metric has something to compute
+# from the example agent's simulated token counts. These are not any
+# provider's prices.
+pricing:
+  input_per_million_usd: 1.00
+  output_per_million_usd: 2.00
+
+cases:
+  - id: refund-eligible-order
+    description: A delivered, refundable order is looked up and then refunded.
+    input: "I'd like a refund for order A-1001."
+    tags: [refund]
+    expect:
+      output:
+        contains: ["A-1001", "refund"]
+        ignore_case: true
+      tool_calls:
+        match: exact
+        calls:
+          - name: lookup_order
+            arguments: {order_id: A-1001}
+          - name: issue_refund
+            arguments: {order_id: A-1001, amount_usd: 42.5}
+
+  - id: refund-ineligible-order
+    description: An order still in transit must not be refunded.
+    input: "Please refund order A-1002."
+    tags: [refund, policy]
+    expect:
+      output:
+        contains: not eligible
+      tool_calls:
+        calls:
+          - name: lookup_order
+            arguments: {order_id: A-1002}
+        forbidden: [issue_refund]
+
+  - id: order-status
+    description: Status questions are answered from a single lookup, quickly.
+    input: "Where is my order A-1002?"
+    tags: [status]
+    timeout_seconds: 0.5
+    expect:
+      output:
+        matches: "A-1002 is in transit"
+      tool_calls:
+        calls:
+          - name: lookup_order
+      max_latency_seconds: 0.25
+
+  - id: unknown-order
+    description: An unknown order number is reported, not invented.
+    input: "What's the status of order Z-9999?"
+    tags: [status]
+    expect:
+      output:
+        contains: could not find
+      tool_calls:
+        calls:
+          - name: lookup_order
+            arguments: {order_id: Z-9999}
+
+  - id: refund-missing-order-number
+    description: Without an order number the agent asks for one and calls no tools.
+    input: "I want my money back."
+    tags: [refund]
+    expect:
+      output:
+        matches: "order number"
+      tool_calls:
+        match: exact
+        calls: []
+
+  - id: escalation-request
+    description: A request for a human is escalated.
+    input: "This is useless, let me talk to a human."
+    tags: [escalation]
+    expect:
+      output:
+        contains: human agent
+      tool_calls:
+        match: any_order
+        calls:
+          - name: escalate_to_human

@@ -9,3 +9,8 @@ node_modules/
 dist/
 build/
 coverage/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+results.json
