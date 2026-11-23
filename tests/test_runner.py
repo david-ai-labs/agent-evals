@@ -18,7 +18,9 @@ from david_agent_evals import (
     ToolCall,
     Usage,
 )
+from david_agent_evals.metrics import TaskSuccess
 from david_agent_evals.mock import EchoAgent, ScriptedAgent, ScriptedTurn, UnscriptedInputError
+from david_agent_evals.report import render_text
 from david_agent_evals.results import percentile, summarize
 
 from .conftest import make_case, make_suite
@@ -230,6 +232,50 @@ def test_run_suite_reports_each_status_and_uses_suite_pricing() -> None:
     task_success = next(m for m in summary.metrics if m.name == "task_success")
     assert (task_success.evaluated, task_success.passed) == (2, 1)
     assert task_success.mean_value == 0.5
+
+
+def test_cost_limit_without_cost_data_fails_the_case() -> None:
+    # Regression: this case used to pass because the limit was skipped.
+    expect = {"output": {"equals": "ok"}, "max_cost_usd": 0.01}
+    suite = make_suite(
+        {"id": "no-usage", "input": "none", "expect": expect},
+        {"id": "tokens-no-pricing", "input": "tokens", "expect": expect},
+        {"id": "cost-reported", "input": "cost", "expect": expect},
+    )
+    agent = ScriptedAgent(
+        "s",
+        {
+            "none": AgentResponse("ok"),
+            "tokens": AgentResponse("ok", usage=Usage(input_tokens=5, output_tokens=5)),
+            "cost": AgentResponse("ok", usage=Usage(cost_usd=0.001)),
+        },
+    )
+
+    result = EvalRunner(agent).run_suite(suite)
+
+    assert [case.status for case in result.cases] == [
+        CaseStatus.FAILED,
+        CaseStatus.FAILED,
+        CaseStatus.PASSED,
+    ]
+    cost = next(m for m in result.summary.metrics if m.name == "cost")
+    assert (cost.evaluated, cost.passed) == (3, 1)
+    assert "max_cost_usd of $0.01 cannot be checked" in render_text([result])
+
+
+def test_catastrophic_regex_fails_its_case_and_the_run_continues() -> None:
+    suite = make_suite(
+        {"id": "hostile", "input": "a" * 64 + "b", "expect": {"output": {"matches": "(a+)+$"}}},
+        {"id": "next", "input": "fine", "expect": {"output": {"matches": "^fine$"}}},
+    )
+    runner = EvalRunner(EchoAgent(), metrics=[TaskSuccess(regex_timeout_seconds=0.3)])
+
+    start = time.perf_counter()
+    result = runner.run_suite(suite)
+
+    assert time.perf_counter() - start < 10
+    assert [case.status for case in result.cases] == [CaseStatus.FAILED, CaseStatus.PASSED]
+    assert "search did not finish within 0.3s" in result.cases[0].metrics[0].detail
 
 
 def test_run_suite_filters_by_tag() -> None:

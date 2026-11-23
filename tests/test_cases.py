@@ -177,6 +177,7 @@ def _case(**overrides: Any) -> dict[str, Any]:
         (_case(tags=[1, 2]), "'tags' must be a string or a list of strings"),
         (_case(expect={"output": {}}), "needs at least one of"),
         (_case(expect={"output": {"matches": "("}}), "not a valid regular expression"),
+        (_case(expect={"output": {"matches": "a" * 1001}}), "limit 1000"),
         (_case(expect={"output": {"contains": "x", "ignore_case": "yes"}}), "true or false"),
         (_case(expect={"tool_calls": {}}), "needs 'calls', 'forbidden', or both"),
         (_case(expect={"tool_calls": {"calls": [{"arguments": {}}]}}), "'name' is required"),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import time
 from typing import Any
 
 import pytest
@@ -13,6 +15,7 @@ from david_agent_evals.metrics import (
     ToolCallCorrectness,
     resolve_cost,
 )
+from david_agent_evals.regex import bounded_search, pattern_problem
 
 from .conftest import make_case
 
@@ -71,6 +74,58 @@ class TestTaskSuccess:
         assert "'alpha'" in result.detail
         assert "'beta'" in result.detail
         assert "forbidden text 'gamma'" in result.detail
+
+
+class TestBoundedRegex:
+    # Exponential backtracking: effectively never finishes without a time limit.
+    CATASTROPHIC = r"(a+)+$"
+    TRIGGER = "a" * 64 + "b"
+
+    def test_search_matches_like_re_search(self) -> None:
+        assert bounded_search(r"order \w-\d+", "your order A-1 shipped").matched is True
+        assert bounded_search(r"^\d+$", "abc").matched is False
+        assert bounded_search("SHIPPED", "it shipped").matched is False
+        assert bounded_search("SHIPPED", "it shipped", ignore_case=True).matched is True
+
+    def test_search_handles_non_ascii_and_unpaired_surrogates(self) -> None:
+        assert bounded_search("café", "un café ☕").matched is True
+        assert bounded_search("x", "bad \udc80 x").matched is True
+
+    def test_catastrophic_pattern_is_stopped(self) -> None:
+        start = time.perf_counter()
+        outcome = bounded_search(self.CATASTROPHIC, self.TRIGGER, timeout_seconds=0.3)
+        elapsed = time.perf_counter() - start
+
+        assert outcome.matched is None
+        assert outcome.problem == "search did not finish within 0.3s"
+        assert elapsed < 5
+
+    def test_task_success_fails_when_the_pattern_cannot_be_checked(self) -> None:
+        case = make_case({"output": {"matches": self.CATASTROPHIC}})
+        result = TaskSuccess(regex_timeout_seconds=0.3).evaluate(
+            MetricContext(case, AgentResponse(self.TRIGGER), 0.0)
+        )
+        assert result is not None
+        assert (result.passed, result.value) == (False, 0.0)
+        assert result.detail == "could not check /(a+)+$/: search did not finish within 0.3s"
+
+    def test_search_process_failure_is_reported_not_raised(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys, "executable", "/nonexistent/python")
+        outcome = bounded_search("a", "a")
+        assert outcome.matched is None
+        assert "could not start the search process" in outcome.problem
+
+    def test_pattern_problem(self) -> None:
+        assert pattern_problem(r"\d+") is None
+        assert "not a valid regular expression" in str(pattern_problem("("))
+        assert "limit 1000" in str(pattern_problem("a" * 1001))
+        assert pattern_problem("a" * 1000) is None
+
+    def test_regex_timeout_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="greater than 0"):
+            TaskSuccess(regex_timeout_seconds=0)
 
 
 class TestToolCallCorrectness:
@@ -227,12 +282,30 @@ class TestCost:
         assert over is not None
         assert (within.passed, over.passed) == (True, False)
 
-    def test_budget_is_not_evaluated_when_cost_is_unknown(self) -> None:
+    @pytest.mark.parametrize(
+        ("usage", "pricing", "reason"),
+        [
+            (None, PRICING, "agent reported no usage data"),
+            (Usage(input_tokens=10), PRICING, "neither a cost nor complete token counts"),
+            (Usage(input_tokens=10, output_tokens=10), None, "suite defines no pricing"),
+        ],
+    )
+    def test_budget_fails_when_cost_is_unknown(
+        self, usage: Usage | None, pricing: Pricing | None, reason: str
+    ) -> None:
+        # Regression: a cost limit that could not be checked used to be reported
+        # as "not evaluated", which let the case pass unverified.
         case = make_case({"max_cost_usd": 0.01})
-        result = Cost().evaluate(MetricContext(case, AgentResponse(""), 0))
+        result = Cost().evaluate(MetricContext(case, AgentResponse("", usage=usage), 0, pricing))
+        assert result is not None
+        assert (result.passed, result.value) == (False, None)
+        assert "max_cost_usd of $0.01 cannot be checked" in result.detail
+        assert reason in result.detail
+
+    def test_unknown_cost_without_a_budget_stays_informational(self) -> None:
+        result = Cost().evaluate(MetricContext(make_case(), AgentResponse(""), 0))
         assert result is not None
         assert (result.passed, result.value) == (None, None)
-        assert "max_cost_usd was not evaluated" in result.detail
 
     def test_informational_without_a_budget(self) -> None:
         context = MetricContext(make_case(), AgentResponse("", usage=Usage(cost_usd=0.3)), 0)

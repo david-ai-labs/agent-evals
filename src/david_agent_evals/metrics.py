@@ -7,7 +7,6 @@ network access.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -19,6 +18,7 @@ from david_agent_evals.cases import (
     Pricing,
     ToolMatchMode,
 )
+from david_agent_evals.regex import DEFAULT_REGEX_TIMEOUT_SECONDS, bounded_search
 from david_agent_evals.types import AgentResponse, ToolCall, Usage
 
 
@@ -37,7 +37,8 @@ class MetricResult:
     name: str
     passed: bool | None
     """``True``/``False`` when the case set a requirement for this metric;
-    ``None`` when the metric is informational or could not be evaluated."""
+    ``None`` when the case set none and the metric is informational. A
+    requirement that cannot be checked is ``False``, never ``None``."""
     value: float | None
     """The measurement: a 0-1 score, seconds, or USD depending on the metric."""
     detail: str = ""
@@ -61,9 +62,19 @@ class Metric(Protocol):
 
 
 class TaskSuccess:
-    """Did the agent's final output satisfy the case's ``expect.output`` checks?"""
+    """Did the agent's final output satisfy the case's ``expect.output`` checks?
+
+    A ``matches`` pattern is searched under a hard time limit (see
+    :mod:`david_agent_evals.regex`). A search that cannot be completed in time
+    fails the check: an unanswered requirement is not a pass.
+    """
 
     name = "task_success"
+
+    def __init__(self, *, regex_timeout_seconds: float = DEFAULT_REGEX_TIMEOUT_SECONDS) -> None:
+        if regex_timeout_seconds <= 0:
+            raise ValueError("regex_timeout_seconds must be greater than 0")
+        self.regex_timeout_seconds = regex_timeout_seconds
 
     def evaluate(self, context: MetricContext) -> MetricResult | None:
         expected = context.case.expect.output
@@ -89,8 +100,15 @@ class TaskSuccess:
                 failures.append(f"output contains forbidden text {needle!r}")
         if expected.matches is not None:
             checks += 1
-            flags = re.IGNORECASE if expected.ignore_case else 0
-            if re.search(expected.matches, output, flags) is None:
+            outcome = bounded_search(
+                expected.matches,
+                output,
+                ignore_case=expected.ignore_case,
+                timeout_seconds=self.regex_timeout_seconds,
+            )
+            if outcome.matched is None:
+                failures.append(f"could not check /{expected.matches}/: {outcome.problem}")
+            elif not outcome.matched:
                 failures.append(f"output does not match /{expected.matches}/")
 
         passed = not failures
@@ -169,10 +187,13 @@ class Latency:
 class Cost:
     """Cost in USD, when the agent reported enough usage data to know it.
 
-    If no cost can be determined the value is ``None`` and the metric is
-    marked not evaluated (``passed=None``) even when the case sets
-    ``expect.max_cost_usd``: the framework never estimates a cost it was not
-    given the data for.
+    The framework never estimates a cost it was not given the data for, so the
+    value is ``None`` when no cost can be determined. If the case also sets
+    ``expect.max_cost_usd``, the metric then fails: a limit that cannot be
+    checked has not been met, and reporting it as anything but a failure would
+    let a case with a cost requirement pass unverified. To evaluate such a
+    case, have the adapter report usage (and give the suite ``pricing`` if it
+    reports only token counts), or remove the limit.
     """
 
     name = "cost"
@@ -181,8 +202,10 @@ class Cost:
         cost, source = resolve_cost(context.response.usage, context.pricing)
         limit = context.case.expect.max_cost_usd
         if cost is None:
-            suffix = "; max_cost_usd was not evaluated" if limit is not None else ""
-            return MetricResult(self.name, None, None, f"cost unavailable: {source}{suffix}")
+            if limit is None:
+                return MetricResult(self.name, None, None, f"cost unavailable: {source}")
+            detail = f"max_cost_usd of ${limit:g} cannot be checked: cost unavailable ({source})"
+            return MetricResult(self.name, False, None, detail)
         if limit is None:
             return MetricResult(self.name, None, cost, source)
         passed = cost <= limit

@@ -57,7 +57,7 @@ Summary
   Pass rate   100.0%
   Latency     mean 0.01ms, p50 0.01ms, p95 0.03ms, max 0.03ms (6 responding case(s))
   Cost        $0.000146 total (6 of 6 case(s) reported usage)
-  Duration    0.80ms
+  Duration    52.55ms
 
 Checks (over the cases where the agent responded and the check applied)
   task_success           6/6 passed
@@ -139,14 +139,14 @@ agent responds without an error or timeout.
 | `expect.output.equals` | Output equals this text, ignoring leading and trailing whitespace. |
 | `expect.output.contains` | Output contains every listed string. |
 | `expect.output.not_contains` | Output contains none of the listed strings. |
-| `expect.output.matches` | A Python regular expression found anywhere in the output. |
+| `expect.output.matches` | A Python regular expression found anywhere in the output. At most 1000 characters; searched under a time limit, see [Regular expressions](#regular-expressions). |
 | `expect.output.ignore_case` | Make the output checks case-insensitive. Default `false`. |
 | `expect.tool_calls.calls` | The expected tool calls. An entry without `arguments` matches any arguments. |
 | `expect.tool_calls.match` | `exact` (default): same calls, same order, nothing extra. `in_order`: expected calls appear in order, other calls may be interleaved. `any_order`: each expected call appears somewhere. |
 | `expect.tool_calls.arguments_match` | `subset` (default): the listed arguments must be present and equal; extra arguments are allowed. `exact`: no extra arguments. Nested mappings follow the same mode; lists must be equal. |
 | `expect.tool_calls.forbidden` | Tool names the agent must not call. |
 | `expect.max_latency_seconds` | Fail the case if the agent takes longer. |
-| `expect.max_cost_usd` | Fail the case if the known cost is higher. |
+| `expect.max_cost_usd` | Fail the case if the cost is higher, or if the cost cannot be determined. |
 
 `calls: []` with the default `exact` match asserts that the agent calls no tools.
 
@@ -205,7 +205,7 @@ code you trust.
 | `task_success` | `expect.output` is set | 1 or 0 | Every output check holds. |
 | `tool_call_correctness` | `expect.tool_calls` is set | Fraction of expected calls matched, 0 to 1 | All expected calls matched under the chosen mode, and no forbidden tool called. A forbidden call sets the value to 0. |
 | `latency` | Always | Wall-clock seconds of the adapter call | Within `max_latency_seconds`, if set. Otherwise informational. |
-| `cost` | Always | USD, or null when unknown | Within `max_cost_usd`, if set and the cost is known. |
+| `cost` | Always | USD, or null when unknown | Within `max_cost_usd`, if set. Fails if a limit is set and the cost is unknown. Informational without a limit. |
 
 A case is `passed` when the agent responds and no metric fails, `failed` when
 a metric fails, `error` when the adapter raises or returns something other
@@ -218,11 +218,40 @@ Cost is reported only where the agent supplies usage data. In order:
 1. If the adapter sets `Usage.cost_usd`, that value is used.
 2. Otherwise, if it reports both token counts and the suite file defines
    `pricing`, the cost is computed from those.
-3. Otherwise the cost is null. A `max_cost_usd` limit is then marked as not
-   evaluated instead of passing or failing, and the report says so.
+3. Otherwise the cost is null.
+
+**A limit that cannot be checked fails the case.** If a case sets
+`max_cost_usd` and the cost is null, the `cost` metric fails and the report
+says why, for example `max_cost_usd of $0.01 cannot be checked: cost
+unavailable (agent reported no usage data)`. A case never passes with a cost
+requirement that was not verified. To fix such a failure, have the adapter
+report usage, add `pricing` to the suite if it reports only token counts, or
+remove the limit. Without a limit, an unknown cost is informational and does
+not affect the result.
+
+The same rule applies to every built-in check: a requirement the framework
+could not evaluate counts as failed, never as passed or skipped.
 
 The framework contains no provider price tables. Prices in a suite file are
 yours to supply and keep current.
+
+### Regular expressions
+
+Python's regular-expression engine can take exponential time on some
+patterns, such as `(a+)+$`, and has no built-in timeout. Because a case file
+may come from someone other than the person running it, each `matches` search
+runs in a separate short-lived Python process that is killed after 2 seconds.
+A search that is stopped fails the `task_success` check with the reason
+`could not check /PATTERN/: search did not finish within 2s`, and the run
+continues with the next case.
+
+Patterns are also limited to 1000 characters and must compile when the case
+file is loaded. From Python, change the limit with
+`TaskSuccess(regex_timeout_seconds=...)`.
+
+Each `matches` check therefore costs one process start, typically tens of
+milliseconds. This is outside the measured agent latency. Prefer `contains`
+or `equals` where they are enough.
 
 ### Timeouts
 
@@ -290,6 +319,7 @@ case file (.yaml/.json) ──▶ cases.py ──▶ EvalSuite
 | `cases.py` | Case and suite models; strict JSON/YAML loading and validation. |
 | `runner.py` | Runs each case on a worker thread with a timeout, then applies the metrics. |
 | `metrics.py` | The `Metric` protocol and the four built-in metrics. |
+| `regex.py` | Regular-expression search with a hard time limit. |
 | `results.py` | Per-case results and the aggregate summary. |
 | `report.py` | Text and JSON rendering. |
 | `loader.py` | Resolves an `--agent` specification to an adapter. |

@@ -8,7 +8,6 @@ expectation cannot silently turn a check into a no-op.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -16,6 +15,8 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import yaml
+
+from david_agent_evals.regex import pattern_problem
 
 
 class CaseValidationError(ValueError):
@@ -216,13 +217,8 @@ def _parse_output(node: _Node | None) -> OutputExpectation | None:
     if node is None:
         return None
     pattern = node.opt_str("matches")
-    if pattern is not None:
-        try:
-            re.compile(pattern)
-        except re.error as exc:
-            raise CaseValidationError(
-                f"{node.where}: 'matches' is not a valid regular expression: {exc}"
-            ) from exc
+    if pattern is not None and (problem := pattern_problem(pattern)) is not None:
+        raise CaseValidationError(f"{node.where}: 'matches': {problem}")
     output = OutputExpectation(
         equals=node.opt_str("equals"),
         contains=node.str_list("contains"),

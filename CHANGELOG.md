@@ -10,4 +10,8 @@ First release.
 - Metrics: task success, tool-call correctness, latency, and cost where the
   agent reports usage data.
 - Deterministic mock agents and two example suites that need no API keys.
+- A requirement that cannot be checked fails its case: `max_cost_usd` with no
+  cost data, or a `matches` search that exceeds its time limit.
+- `matches` searches run in a child process with a hard time limit, so a
+  pattern with catastrophic backtracking cannot block a run.
 - Text report, JSON results, and the `david-evals` command (`run`, `validate`).
