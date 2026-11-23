@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "david-agent-evals"
+dynamic = ["version"]
+description = "A small, provider-independent framework for evaluating AI agent reliability."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "DAVID AI Labs" }]
+keywords = ["ai", "agents", "evaluation", "llm", "testing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+dependencies = ["PyYAML>=6.0"]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "ruff>=0.8",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+david-evals = "david_agent_evals.cli:main"
+
+[project.urls]
+Repository = "https://github.com/david-ai-labs/agent-evals"
+Issues = "https://github.com/david-ai-labs/agent-evals/issues"
+
+[tool.hatch.version]
+path = "src/david_agent_evals/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/david_agent_evals"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "PT", "RUF"]
+
+[tool.mypy]
+strict = true
+files = ["src", "examples"]
